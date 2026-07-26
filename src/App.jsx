@@ -362,7 +362,16 @@ export default function App() {
   );
 
  function showDashboard() {
+  // Reload the latest saved registry entries
+  setRegisteredApplications(loadRegistryApplications());
+
+  // Switch back to the dashboard
   setActivePage("dashboard");
+
+  // Immediately refresh health for the updated registry
+  setTimeout(() => {
+    void checkAllApplications({ manual: false });
+  }, 0);
 }
   /**
    * Reload registry entries when another tab changes localStorage.
