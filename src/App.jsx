@@ -219,14 +219,112 @@ function getEventStatusClass(event) {
   }
 }
 
+const CONNECTIONS_STORAGE_KEY = "observation-lounge-connections";
+
+function normalizeSavedConnection(connection) {
+  const latestObservation = connection.latestObservation || {};
+
+  const observationApplication =
+    latestObservation.application &&
+    typeof latestObservation.application === "object"
+      ? latestObservation.application
+      : {};
+
+  const observationService =
+    latestObservation.service && typeof latestObservation.service === "object"
+      ? latestObservation.service
+      : {};
+
+  const observationDatabase =
+    latestObservation.database && typeof latestObservation.database === "object"
+      ? latestObservation.database
+      : {};
+
+  return {
+    ...connection,
+
+    id: connection.id,
+    name:
+      observationApplication.name || connection.name || "Unnamed Application",
+
+    service:
+      observationService.name ||
+      latestObservation.service ||
+      connection.name ||
+      "Unknown Service",
+
+    description: connection.description || "",
+
+    observationUrl: connection.observationUrl || null,
+    dashboardUrl: connection.dashboardUrl || "",
+
+    connectionStatus:
+      connection.enabled === false
+        ? APPLICATION_CONNECTION_STATUS.DISABLED
+        : APPLICATION_CONNECTION_STATUS.CONNECTED,
+
+    environment:
+      latestObservation.environment || connection.environment || "Unknown",
+
+    database:
+      observationDatabase.status || latestObservation.database || "Unknown",
+
+    deploymentProvider: connection.deploymentProvider || "Unknown",
+
+    frontendProvider: connection.frontendProvider || "Unknown",
+
+    domain: connection.dashboardUrl || connection.observationUrl || null,
+
+    enabled: connection.enabled !== false,
+
+    thresholds: {
+      degradedResponseMs: 2_000,
+      offlineAfterFailures: 3,
+    },
+
+    metadata: {
+      applicationType: connection.appType || "custom",
+      visibility: connection.visibility || "private",
+      featured: connection.featured === true,
+    },
+  };
+}
+
+function getSavedRegistryApplications() {
+  try {
+    const storedValue = window.localStorage.getItem(CONNECTIONS_STORAGE_KEY);
+
+    if (!storedValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue
+      .filter((connection) => connection && connection.id)
+      .map(normalizeSavedConnection);
+  } catch (error) {
+    console.error("Unable to load saved application registry:", error);
+
+    return [];
+  }
+}
+
+function loadRegistryApplications() {
+  const savedApplications = getSavedRegistryApplications();
+
+  return savedApplications.length > 0 ? savedApplications : getApplications();
+}
+
 function getProspectorObservationUrl() {
-  const configuredUrl =
-    import.meta.env.VITE_PROSPECTOR_API_URL?.trim();
+  const configuredUrl = import.meta.env.VITE_PROSPECTOR_API_URL?.trim();
 
   if (!configuredUrl) {
-    return import.meta.env.DEV
-      ? "http://localhost:5050/api/health"
-      : "";
+    return import.meta.env.DEV ? "http://localhost:5050/api/health" : "";
   }
 
   const normalizedUrl = configuredUrl.replace(/\/+$/, "");
@@ -254,50 +352,71 @@ export default function App() {
   );
 
   /**
-   * Static application definitions supplied by the registry.
+   * Application definitions supplied by the Connections registry.
+   *
+   * Browser-saved registry entries are preferred. The code registry is
+   * retained as a fallback until the registry is moved to a shared API.
    */
-  const registeredApplications = useMemo(() => getApplications(), []);
+  const [registeredApplications, setRegisteredApplications] = useState(() =>
+    loadRegistryApplications(),
+  );
+
+ function showDashboard() {
+  setActivePage("dashboard");
+}
+  /**
+   * Reload registry entries when another tab changes localStorage.
+   */
+  useEffect(() => {
+    function handleStorageChange(event) {
+      if (event.key && event.key !== CONNECTIONS_STORAGE_KEY) {
+        return;
+      }
+
+      setRegisteredApplications(loadRegistryApplications());
+    }
+
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
 
   /**
    * Only connected applications with an observation endpoint can be polled.
    */
   const monitorableApplications = useMemo(
-  () =>
-    registeredApplications
-      .filter(
-        (application) =>
-          application.connectionStatus ===
-          APPLICATION_CONNECTION_STATUS.CONNECTED,
-      )
-      .map((application) => {
-        if (application.observationUrl) {
+    () =>
+      registeredApplications
+        .filter(
+          (application) =>
+            application.connectionStatus ===
+            APPLICATION_CONNECTION_STATUS.CONNECTED,
+        )
+        .map((application) => {
+          if (application.observationUrl) {
+            return application;
+          }
+
+          if (application.id === "prospector") {
+            return {
+              ...application,
+              observationUrl: getProspectorObservationUrl(),
+            };
+          }
+
           return application;
-        }
-
-        if (application.id === "prospector") {
-          return {
-            ...application,
-            observationUrl: getProspectorObservationUrl(),
-          };
-        }
-
-        return application;
-      })
-      .filter((application) => Boolean(application.observationUrl)),
-  [registeredApplications],
-);
-
-console.log(
-  "Observation Lounge monitorable applications:",
-  monitorableApplications,
-);
+        })
+        .filter((application) => Boolean(application.observationUrl)),
+    [registeredApplications],
+  );
 
   /**
    * Publish a normalized application health result into the engine.
    */
   const publishHealthResult = useCallback((result) => {
-    const applicationName =
-      result.name || result.id || "Unknown application";
+    const applicationName = result.name || result.id || "Unknown application";
 
     observationEngine.publish({
       type: EVENT_TYPES.HEALTH_CHECK,
@@ -414,9 +533,7 @@ console.log(
             id: application.id,
             name: application.name,
             service:
-              liveHealth.service ||
-              application.service ||
-              application.name,
+              liveHealth.service || application.service || application.name,
           };
         }
 
@@ -467,13 +584,11 @@ console.log(
   const applicationsNeedingAttention =
     degradedApplications + offlineApplications;
 
-  const averageSessionResponse =
-    metricsState.health.averageResponseTime;
+  const averageSessionResponse = metricsState.health.averageResponseTime;
 
   const connectedApplications = applications.filter(
     (application) =>
-      application.connectionStatus ===
-      APPLICATION_CONNECTION_STATUS.CONNECTED,
+      application.connectionStatus === APPLICATION_CONNECTION_STATUS.CONNECTED,
   );
 
   const overallHealthy =
@@ -485,364 +600,309 @@ console.log(
   /**
    * Fleet-wide status shown in the Lounge header.
    */
- const connectedApplicationCount = connectedApplications.length;
+  const connectedApplicationCount = connectedApplications.length;
 
-let systemStatusLabel = "All connected applications healthy";
+  let systemStatusLabel = "All connected applications healthy";
 
-if (connectedApplicationCount === 0) {
-  systemStatusLabel = "No applications connected";
-} else if (offlineApplications > 0) {
-  systemStatusLabel = `${offlineApplications} offline`;
-} else if (degradedApplications > 0) {
-  systemStatusLabel = `${degradedApplications} degraded`;
-} else if (checkingApplications > 0) {
-  systemStatusLabel = "Checking application fleet";
-}
+  if (connectedApplicationCount === 0) {
+    systemStatusLabel = "No applications connected";
+  } else if (offlineApplications > 0) {
+    systemStatusLabel = `${offlineApplications} offline`;
+  } else if (degradedApplications > 0) {
+    systemStatusLabel = `${degradedApplications} degraded`;
+  } else if (checkingApplications > 0) {
+    systemStatusLabel = "Checking application fleet";
+  }
 
   return (
     <main className="lounge-shell">
-    {/* Observation Lounge header */}
-    <header className="lounge-header">
-      <div className="lounge-brand">
-        <img
-          src="/observation-lounge.png"
-          alt="Observation Lounge"
-          className="lounge-logo"
-        />
+      {/* Observation Lounge header */}
+      <header className="lounge-header">
+        <div className="lounge-brand">
+          <img
+            src="/observation-lounge.png"
+            alt="Observation Lounge"
+            className="lounge-logo"
+          />
 
-        <div>
-          <p className="eyebrow">Operational Intelligence Platform</p>
+          <div>
+            <p className="eyebrow">Operational Intelligence Platform</p>
 
-          <h1>OBSERVATION LOUNGE</h1>
+            <h1>OBSERVATION LOUNGE</h1>
 
-          <p className="subtitle">
-            Mission control for your production applications. Observe. Detect.
-            Respond.
-          </p>
+            <p className="subtitle">
+              Mission control for your production applications. Observe. Detect.
+              Respond.
+            </p>
+          </div>
         </div>
-      </div>
 
-      <div className="lounge-header-actions">
-        <nav
-          className="lounge-navigation"
-          aria-label="Observation Lounge navigation"
-        >
-          <button
-            className={`navigation-button ${
-              activePage === "dashboard" ? "active" : ""
-            }`}
-            type="button"
-            onClick={() => setActivePage("dashboard")}
+        <div className="lounge-header-actions">
+          <nav
+            className="lounge-navigation"
+            aria-label="Observation Lounge navigation"
           >
-            Dashboard
-          </button>
-
-          <button
-            className={`navigation-button ${
-              activePage === "connections" ? "active" : ""
-            }`}
-            type="button"
-            onClick={() => setActivePage("connections")}
-          >
-            Connections
-          </button>
-        </nav>
-
-        <div
-          className={`system-status ${
-            overallHealthy
-              ? "system-status-healthy"
-              : "system-status-warning"
-          }`}
-        >
-          <span className="status-dot" />
-          {systemStatusLabel}
-        </div>
-      </div>
-    </header>
-
-    {activePage === "dashboard" && (
-      <>
-        {/* Fleet summary */}
-        <section
-          className="summary-grid"
-          aria-label="Fleet health summary"
-        >
-          <article className="metric-card">
-            <span>Applications</span>
-            <strong>{applications.length}</strong>
-          </article>
-
-          <article className="metric-card">
-            <span>Healthy</span>
-            <strong>{healthyApplications}</strong>
-          </article>
-
-          <article className="metric-card">
-            <span>Needs attention</span>
-            <strong>{applicationsNeedingAttention}</strong>
-          </article>
-
-          <article className="metric-card">
-            <span>Average response</span>
-            <strong>
-              {formatResponseTime(averageSessionResponse)}
-            </strong>
-          </article>
-
-          <article className="metric-card">
-            <span>Open incidents</span>
-            <strong>{openIncidents}</strong>
-          </article>
-        </section>
-
-        {/* Application fleet cards */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Fleet status</p>
-              <h2>Applications</h2>
-            </div>
+            <button
+              className={`navigation-button ${
+                activePage === "dashboard" ? "active" : ""
+              }`}
+              type="button"
+              onClick={showDashboard}
+            >
+              Dashboard
+            </button>
 
             <button
-              className="refresh-button"
+              className={`navigation-button ${
+                activePage === "connections" ? "active" : ""
+              }`}
               type="button"
-              onClick={() => {
-                void checkAllApplications({
-                  manual: true,
-                });
-              }}
-              disabled={refreshing}
+              onClick={() => setActivePage("connections")}
             >
-              {refreshing ? "Checking..." : "Refresh health"}
+              Connections
             </button>
+          </nav>
+
+          <div
+            className={`system-status ${
+              overallHealthy ? "system-status-healthy" : "system-status-warning"
+            }`}
+          >
+            <span className="status-dot" />
+            {systemStatusLabel}
           </div>
+        </div>
+      </header>
 
-          <div className="application-grid">
-            {applications.map((application) => {
-              const statusClass = getStatusClass(
-                application.status,
-              );
+      {activePage === "dashboard" && (
+        <>
+          {/* Fleet summary */}
+          <section className="summary-grid" aria-label="Fleet health summary">
+            <article className="metric-card">
+              <span>Applications</span>
+              <strong>{applications.length}</strong>
+            </article>
 
-              return (
-                <article
-                  className="application-card"
-                  key={application.id}
-                >
-                  <div className="application-topline">
-                    <h3>{application.name}</h3>
+            <article className="metric-card">
+              <span>Healthy</span>
+              <strong>{healthyApplications}</strong>
+            </article>
 
-                    <span
-                      className={`status-badge ${statusClass}`}
-                    >
-                      {application.status}
-                    </span>
-                  </div>
+            <article className="metric-card">
+              <span>Needs attention</span>
+              <strong>{applicationsNeedingAttention}</strong>
+            </article>
 
-                  <dl>
-                    <div>
-                      <dt>Service</dt>
-                      <dd>{application.service || "Unknown"}</dd>
-                    </div>
+            <article className="metric-card">
+              <span>Average response</span>
+              <strong>{formatResponseTime(averageSessionResponse)}</strong>
+            </article>
 
-                    <div>
-                      <dt>Response</dt>
-                      <dd>
-                        {formatResponseTime(
-                          application.responseTime,
-                        )}
-                      </dd>
-                    </div>
+            <article className="metric-card">
+              <span>Open incidents</span>
+              <strong>{openIncidents}</strong>
+            </article>
+          </section>
 
-                    <div>
-                      <dt>Database</dt>
-                      <dd>{application.database || "Unknown"}</dd>
-                    </div>
+          {/* Application fleet cards */}
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Fleet status</p>
+                <h2>Applications</h2>
+              </div>
 
-                    <div>
-                      <dt>Environment</dt>
-                      <dd>
-                        {application.environment || "Unknown"}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt>Backend</dt>
-                      <dd>
-                        {application.deploymentProvider ||
-                          "Unknown"}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt>Frontend</dt>
-                      <dd>
-                        {application.frontendProvider ||
-                          "Unknown"}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt>Domain</dt>
-                      <dd>
-                        {application.domain || "Not configured"}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt>Uptime</dt>
-                      <dd>
-                        {formatUptime(
-                          application.uptimeSeconds,
-                        )}
-                      </dd>
-                    </div>
-
-                    <div>
-                      <dt>Last checked</dt>
-                      <dd>
-                        {formatCheckedAt(application.checkedAt)}
-                      </dd>
-                    </div>
-                  </dl>
-
-                  {application.error && (
-                    <p
-                      className="application-error"
-                      role="alert"
-                    >
-                      {application.error}
-                    </p>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* Engine-managed incident centre */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Incident centre</p>
-              <h2>Incidents</h2>
+              <button
+                className="refresh-button"
+                type="button"
+                onClick={() => {
+                  void checkAllApplications({
+                    manual: true,
+                  });
+                }}
+                disabled={refreshing}
+              >
+                {refreshing ? "Checking..." : "Refresh health"}
+              </button>
             </div>
 
-            <span className="event-count">
-              {incidentState.open} open ·{" "}
-              {incidentState.resolved} resolved
-            </span>
-          </div>
-
-          <div className="incident-list">
-            {incidents.length === 0 ? (
-              <div className="event-empty">
-                No incidents recorded during this session.
-              </div>
-            ) : (
-              incidents.map((incident) => (
-                <article
-                  className="incident-row"
-                  key={incident.id}
-                >
-                  <div>
-                    <strong>{incident.title}</strong>
-
-                    <p>
-                      {incident.application} ·{" "}
-                      {formatCheckedAt(incident.openedAt)}
-                      {incident.resolvedAt
-                        ? ` · Resolved ${formatCheckedAt(
-                            incident.resolvedAt,
-                          )}`
-                        : ""}
-                    </p>
-                  </div>
-
-                  <div className="incident-meta">
-                    <span
-                      className={`severity-badge ${incident.severity}`}
-                    >
-                      {incident.severity}
-                    </span>
-
-                    <span
-                      className={`incident-status ${incident.status.toLowerCase()}`}
-                    >
-                      {incident.status}
-                    </span>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-        </section>
-
-        {/* Engine-managed event history */}
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Live activity</p>
-              <h2>Event stream</h2>
-            </div>
-
-            <span className="event-count">
-              {healthHistory.length} recent{" "}
-              {healthHistory.length === 1
-                ? "event"
-                : "events"}
-            </span>
-          </div>
-
-          <div className="event-list">
-            {healthHistory.length === 0 ? (
-              <div className="event-empty">
-                Waiting for the first engine event...
-              </div>
-            ) : (
-              healthHistory.map((event) => {
-                const eventStatus = getEventStatus(event);
-
-                const eventStatusClass =
-                  getEventStatusClass(event);
-
-                const responseTime =
-                  event.type === EVENT_TYPES.HEALTH_CHECK
-                    ? event.payload?.responseTime
-                    : null;
+            <div className="application-grid">
+              {applications.map((application) => {
+                const statusClass = getStatusClass(application.status);
 
                 return (
-                  <div className="event-row" key={event.id}>
-                    <span>
-                      {formatCheckedAt(event.timestamp)}
-                    </span>
+                  <article className="application-card" key={application.id}>
+                    <div className="application-topline">
+                      <h3>{application.name}</h3>
 
-                    <strong>{getEventLabel(event)}</strong>
+                      <span className={`status-badge ${statusClass}`}>
+                        {application.status}
+                      </span>
+                    </div>
 
-                    <em
-                      className={`event-status ${eventStatusClass}`}
-                    >
-                      {eventStatus}
+                    <dl>
+                      <div>
+                        <dt>Service</dt>
+                        <dd>{application.service || "Unknown"}</dd>
+                      </div>
 
-                      {responseTime != null
-                        ? ` · ${responseTime} ms`
-                        : ""}
-                    </em>
-                  </div>
+                      <div>
+                        <dt>Response</dt>
+                        <dd>{formatResponseTime(application.responseTime)}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Database</dt>
+                        <dd>{application.database || "Unknown"}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Environment</dt>
+                        <dd>{application.environment || "Unknown"}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Backend</dt>
+                        <dd>{application.deploymentProvider || "Unknown"}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Frontend</dt>
+                        <dd>{application.frontendProvider || "Unknown"}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Domain</dt>
+                        <dd>{application.domain || "Not configured"}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Uptime</dt>
+                        <dd>{formatUptime(application.uptimeSeconds)}</dd>
+                      </div>
+
+                      <div>
+                        <dt>Last checked</dt>
+                        <dd>{formatCheckedAt(application.checkedAt)}</dd>
+                      </div>
+                    </dl>
+
+                    {application.error && (
+                      <p className="application-error" role="alert">
+                        {application.error}
+                      </p>
+                    )}
+                  </article>
                 );
-              })
-            )}
-          </div>
-        </section>
-      </>
-    )}
+              })}
+            </div>
+          </section>
 
-    {activePage === "connections" && (
-      <AppConnectionsPage
-        registeredApplications={registeredApplications}
-      />
-    )}
-  
+          {/* Engine-managed incident centre */}
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Incident centre</p>
+                <h2>Incidents</h2>
+              </div>
+
+              <span className="event-count">
+                {incidentState.open} open · {incidentState.resolved} resolved
+              </span>
+            </div>
+
+            <div className="incident-list">
+              {incidents.length === 0 ? (
+                <div className="event-empty">
+                  No incidents recorded during this session.
+                </div>
+              ) : (
+                incidents.map((incident) => (
+                  <article className="incident-row" key={incident.id}>
+                    <div>
+                      <strong>{incident.title}</strong>
+
+                      <p>
+                        {incident.application} ·{" "}
+                        {formatCheckedAt(incident.openedAt)}
+                        {incident.resolvedAt
+                          ? ` · Resolved ${formatCheckedAt(
+                              incident.resolvedAt,
+                            )}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <div className="incident-meta">
+                      <span className={`severity-badge ${incident.severity}`}>
+                        {incident.severity}
+                      </span>
+
+                      <span
+                        className={`incident-status ${incident.status.toLowerCase()}`}
+                      >
+                        {incident.status}
+                      </span>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+
+          {/* Engine-managed event history */}
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Live activity</p>
+                <h2>Event stream</h2>
+              </div>
+
+              <span className="event-count">
+                {healthHistory.length} recent{" "}
+                {healthHistory.length === 1 ? "event" : "events"}
+              </span>
+            </div>
+
+            <div className="event-list">
+              {healthHistory.length === 0 ? (
+                <div className="event-empty">
+                  Waiting for the first engine event...
+                </div>
+              ) : (
+                healthHistory.map((event) => {
+                  const eventStatus = getEventStatus(event);
+
+                  const eventStatusClass = getEventStatusClass(event);
+
+                  const responseTime =
+                    event.type === EVENT_TYPES.HEALTH_CHECK
+                      ? event.payload?.responseTime
+                      : null;
+
+                  return (
+                    <div className="event-row" key={event.id}>
+                      <span>{formatCheckedAt(event.timestamp)}</span>
+
+                      <strong>{getEventLabel(event)}</strong>
+
+                      <em className={`event-status ${eventStatusClass}`}>
+                        {eventStatus}
+
+                        {responseTime != null ? ` · ${responseTime} ms` : ""}
+                      </em>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </>
+      )}
+
+      {activePage === "connections" && (
+        <AppConnectionsPage registeredApplications={registeredApplications} />
+      )}
     </main>
   );
 }
