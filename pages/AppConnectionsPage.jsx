@@ -4,11 +4,15 @@ const STORAGE_KEY = "observation-lounge-connections";
 
 const initialForm = {
   name: "",
+  service: "",
   description: "",
   appType: "saas",
   environment: "production",
   observationUrl: "",
   dashboardUrl: "",
+  deploymentProvider: "",
+  frontendProvider: "",
+  domain: "",
   authType: "bearer",
   authToken: "",
   pollingIntervalMinutes: 5,
@@ -99,6 +103,10 @@ export default function AppConnectionsPage() {
       return "Application name is required.";
     }
 
+    if (!form.service.trim()) {
+      return "Service name is required.";
+    }
+
     if (!form.observationUrl.trim()) {
       return "Observation API URL is required.";
     }
@@ -154,9 +162,13 @@ export default function AppConnectionsPage() {
             ...connection,
             ...form,
             name: form.name.trim(),
+            service: form.service.trim(),
             description: form.description.trim(),
             observationUrl: normalizeUrl(form.observationUrl),
             dashboardUrl: normalizeUrl(form.dashboardUrl),
+            deploymentProvider: form.deploymentProvider.trim(),
+            frontendProvider: form.frontendProvider.trim(),
+            domain: form.domain.trim(),
             authToken:
               form.authToken.trim() || connection.authToken || "",
             updatedAt: timestamp,
@@ -170,9 +182,13 @@ export default function AppConnectionsPage() {
         id: createConnectionId(),
         ...form,
         name: form.name.trim(),
+        service: form.service.trim(),
         description: form.description.trim(),
         observationUrl: normalizeUrl(form.observationUrl),
         dashboardUrl: normalizeUrl(form.dashboardUrl),
+        deploymentProvider: form.deploymentProvider.trim(),
+        frontendProvider: form.frontendProvider.trim(),
+        domain: form.domain.trim(),
         authToken: form.authToken.trim(),
         lastTestStatus: "",
         lastTestMessage: "",
@@ -197,11 +213,15 @@ export default function AppConnectionsPage() {
 
     setForm({
       name: connection.name || "",
+      service: connection.service || "",
       description: connection.description || "",
       appType: connection.appType || "saas",
       environment: connection.environment || "production",
       observationUrl: connection.observationUrl || "",
       dashboardUrl: connection.dashboardUrl || "",
+      deploymentProvider: connection.deploymentProvider || "",
+      frontendProvider: connection.frontendProvider || "",
+      domain: connection.domain || "",
       authType: connection.authType || "none",
       authToken: "",
       pollingIntervalMinutes:
@@ -427,6 +447,16 @@ export default function AppConnectionsPage() {
             </label>
 
             <label>
+              Service Name
+              <input
+                name="service"
+                value={form.service}
+                onChange={updateField}
+                placeholder="Syndicator API"
+              />
+            </label>
+
+            <label>
               Application Type
               <select
                 name="appType"
@@ -498,6 +528,36 @@ export default function AppConnectionsPage() {
                 value={form.dashboardUrl}
                 onChange={updateField}
                 placeholder="https://example.com"
+              />
+            </label>
+
+            <label>
+              Backend Provider
+              <input
+                name="deploymentProvider"
+                value={form.deploymentProvider}
+                onChange={updateField}
+                placeholder="Render"
+              />
+            </label>
+
+            <label>
+              Frontend Provider
+              <input
+                name="frontendProvider"
+                value={form.frontendProvider}
+                onChange={updateField}
+                placeholder="Netlify"
+              />
+            </label>
+
+            <label className="full-width">
+              Production Domain
+              <input
+                name="domain"
+                value={form.domain}
+                onChange={updateField}
+                placeholder="unitedsportsprospects.com"
               />
             </label>
 
@@ -665,6 +725,30 @@ export default function AppConnectionsPage() {
                   <div>
                     <dt>Visibility</dt>
                     <dd>{connection.visibility}</dd>
+                  </div>
+
+                  <div>
+                    <dt>Service</dt>
+                    <dd>{connection.service || "Not configured"}</dd>
+                  </div>
+
+                  <div>
+                    <dt>Backend</dt>
+                    <dd>
+                      {connection.deploymentProvider || "Not configured"}
+                    </dd>
+                  </div>
+
+                  <div>
+                    <dt>Frontend</dt>
+                    <dd>
+                      {connection.frontendProvider || "Not configured"}
+                    </dd>
+                  </div>
+
+                  <div>
+                    <dt>Domain</dt>
+                    <dd>{connection.domain || "Not configured"}</dd>
                   </div>
 
                   <div>
