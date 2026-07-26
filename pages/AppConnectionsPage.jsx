@@ -442,7 +442,7 @@ export default function AppConnectionsPage() {
                 name="name"
                 value={form.name}
                 onChange={updateField}
-                placeholder="Apartments.com Syndicator"
+                placeholder="Nsame of App"
               />
             </label>
 
