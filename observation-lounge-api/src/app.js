@@ -2,6 +2,7 @@
 import process from "node:process";
 import applicationRoutes from "./routes/applicationRoutes.js";
 import healthRoutes from "./routes/healthRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
 
 import cors from "cors";
 import express from "express";
@@ -40,6 +41,10 @@ app.use(
 app.use(morgan("dev"));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use(
+  "/api/notifications",
+  notificationRoutes
+);
 
 app.get("/", (_request, response) => {
   response.status(200).json({

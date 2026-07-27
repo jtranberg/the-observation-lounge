@@ -3,6 +3,7 @@ import observationEngine from "./core/observationEngine";
 import historyProcessor from "./processors/historyProcessor";
 import incidentProcessor from "./processors/incidentProcessor";
 import metricsProcessor from "./processors/metricsProcessor";
+import notificationProcessor from "./processors/notificationProcessor";
 
 import { loadApplicationRegistry } from "./registry/applicationRegistry";
 
@@ -16,6 +17,7 @@ async function initializeObservationLounge() {
     observationEngine.registerProcessor(historyProcessor);
     observationEngine.registerProcessor(incidentProcessor);
     observationEngine.registerProcessor(metricsProcessor);
+    observationEngine.registerProcessor(notificationProcessor);
 
     observationEngine.start();
 
@@ -34,5 +36,6 @@ export {
   historyProcessor,
   incidentProcessor,
   metricsProcessor,
+  notificationProcessor,
   observationEngine,
 };
