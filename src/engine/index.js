@@ -4,32 +4,31 @@ import historyProcessor from "./processors/historyProcessor";
 import incidentProcessor from "./processors/incidentProcessor";
 import metricsProcessor from "./processors/metricsProcessor";
 
-import { registerDefaultApplications } from "./registry/registerApplications";
+import { loadApplicationRegistry } from "./registry/applicationRegistry";
 
 /**
- * Register the current application fleet.
+ * Start the Observation Lounge.
  */
-registerDefaultApplications();
+async function initializeObservationLounge() {
+  try {
+    await loadApplicationRegistry();
 
-/**
- * Register all core Observation Lounge processors.
- */
-observationEngine.registerProcessor(
-  historyProcessor,
-);
+    observationEngine.registerProcessor(historyProcessor);
+    observationEngine.registerProcessor(incidentProcessor);
+    observationEngine.registerProcessor(metricsProcessor);
 
-observationEngine.registerProcessor(
-  incidentProcessor,
-);
+    observationEngine.start();
 
-observationEngine.registerProcessor(
-  metricsProcessor,
-);
+    console.log("Observation Lounge initialized.");
+  } catch (error) {
+    console.error(
+      "Failed to initialize Observation Lounge:",
+      error,
+    );
+  }
+}
 
-/**
- * Start the shared engine after configuration is complete.
- */
-observationEngine.start();
+initializeObservationLounge();
 
 export {
   historyProcessor,
