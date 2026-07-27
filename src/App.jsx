@@ -519,7 +519,7 @@ export default function App() {
 
     const intervalId = window.setInterval(() => {
       void checkAllApplications();
-    }, 30_000);
+    }, 5 * 60 * 1000);
 
     return () => {
       window.clearTimeout(initialCheckId);
