@@ -24,6 +24,8 @@ import {
 
 import AppConnectionsPage from "../pages/AppConnectionsPage";
 
+import { getNotifications } from "./services/notificationApi";
+
 /**
  * ------------------------------------------------------------------
  * Observation Lounge
@@ -240,7 +242,6 @@ export default function App() {
 
   const [incidentState, setIncidentState] = useState(() =>
     incidentProcessor.getState(),
-  
   );
 
   const initialHealthCheckStarted = useRef(false);
@@ -252,6 +253,42 @@ export default function App() {
     loadRegistryApplications(),
   );
 
+  const [notifications, setNotifications] = useState([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(true);
+  const [notificationsError, setNotificationsError] = useState("");
+
+  const loadNotifications = useCallback(async () => {
+    try {
+      setNotificationsLoading(true);
+      setNotificationsError("");
+
+      const response = await getNotifications({
+        limit: 50,
+      });
+
+      setNotifications(
+        Array.isArray(response.notifications) ? response.notifications : [],
+      );
+    } catch (error) {
+      setNotificationsError(error.message || "Unable to load notifications.");
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const taskId = window.setTimeout(() => {
+      void loadNotifications();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(taskId);
+    };
+  }, [loadNotifications]);
+
+  const unreadNotificationCount = notifications.filter(
+    (notification) => notification.status === "unread",
+  ).length;
   /**
    * Load the latest application registry from the backend after mount.
    */
@@ -331,37 +368,26 @@ export default function App() {
   const checkApplicationHealth = useCallback(
     async (application) => {
       try {
-        const {
-          application: updatedApplication,
-          check,
-        } = await checkRegistryApplicationHealth(application.id);
+        const { application: updatedApplication, check } =
+          await checkRegistryApplicationHealth(application.id);
 
         const result = {
           id: updatedApplication.id,
           name: updatedApplication.name,
           status:
-            check?.healthStatus ||
-            updatedApplication.healthStatus ||
-            "Unknown",
+            check?.healthStatus || updatedApplication.healthStatus || "Unknown",
           responseTime:
-            check?.responseTime ??
-            updatedApplication.lastResponseTime ??
-            null,
+            check?.responseTime ?? updatedApplication.lastResponseTime ?? null,
           database:
             check?.databaseStatus ||
             updatedApplication.databaseStatus ||
             updatedApplication.database ||
             "Unknown",
-          service:
-            updatedApplication.service || updatedApplication.name,
-          environment:
-            updatedApplication.environment || "Unknown",
+          service: updatedApplication.service || updatedApplication.name,
+          environment: updatedApplication.environment || "Unknown",
           uptimeSeconds:
-            check?.uptimeSeconds ??
-            check?.data?.uptimeSeconds ??
-            null,
-          checkedAt:
-            updatedApplication.lastCheckedAt || new Date(),
+            check?.uptimeSeconds ?? check?.data?.uptimeSeconds ?? null,
+          checkedAt: updatedApplication.lastCheckedAt || new Date(),
           httpStatus: check?.httpStatus ?? null,
           reachable: check?.reachable ?? false,
           metrics: check?.metrics || {},
@@ -405,8 +431,7 @@ export default function App() {
           metrics: {},
           widgets: [],
           raw: null,
-          error:
-            error.message || "Unexpected health-check failure.",
+          error: error.message || "Unexpected health-check failure.",
         };
 
         setApplicationHealth((current) => ({
@@ -457,7 +482,10 @@ export default function App() {
       setRegistryLoading(true);
       setRegistryError("");
 
-      const applications = await refreshApplicationRegistry();
+      const [applications] = await Promise.all([
+        refreshApplicationRegistry(),
+        loadNotifications(),
+      ]);
 
       setRegisteredApplications(applications);
 
@@ -480,7 +508,7 @@ export default function App() {
     } finally {
       setRegistryLoading(false);
     }
-  }, [checkApplicationHealth]);
+  }, [checkApplicationHealth, loadNotifications]);
 
   /**
    * Subscribe React to processor-owned operational state.
@@ -510,10 +538,7 @@ export default function App() {
    * monitoring every five minutes.
    */
   useEffect(() => {
-    if (
-      registryLoading ||
-      monitorableApplications.length === 0
-    ) {
+    if (registryLoading || monitorableApplications.length === 0) {
       return undefined;
     }
 
@@ -522,18 +547,17 @@ export default function App() {
       void checkAllApplications();
     }
 
-    const intervalId = window.setInterval(() => {
-      void checkAllApplications();
-    }, 5 * 60 * 1000);
+    const intervalId = window.setInterval(
+      () => {
+        void checkAllApplications();
+      },
+      5 * 60 * 1000,
+    );
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [
-    checkAllApplications,
-    monitorableApplications.length,
-    registryLoading,
-  ]);
+  }, [checkAllApplications, monitorableApplications.length, registryLoading]);
 
   /**
    * Merge registry configuration with current health results.
@@ -721,6 +745,84 @@ export default function App() {
               <span>Open incidents</span>
               <strong>{openIncidents}</strong>
             </article>
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Notification centre</p>
+
+                <h2>Notifications</h2>
+              </div>
+
+              <div className="notification-heading-actions">
+                <span className="event-count">
+                  {unreadNotificationCount} unread
+                </span>
+
+                <button
+                  className="refresh-button"
+                  type="button"
+                  onClick={() => {
+                    void loadNotifications();
+                  }}
+                  disabled={notificationsLoading}
+                >
+                  {notificationsLoading
+                    ? "Loading..."
+                    : "Refresh notifications"}
+                </button>
+              </div>
+            </div>
+
+            {notificationsError && (
+              <p className="application-error" role="alert">
+                {notificationsError}
+              </p>
+            )}
+
+            <div className="notification-list">
+              {notificationsLoading && notifications.length === 0 ? (
+                <div className="event-empty">Loading notifications...</div>
+              ) : notifications.length === 0 ? (
+                <div className="event-empty">No notifications recorded.</div>
+              ) : (
+                notifications.map((notification) => (
+                  <article
+                    className={`notification-row ${
+                      notification.status === "unread" ? "unread" : ""
+                    }`}
+                    key={notification._id}
+                  >
+                    <div className="notification-content">
+                      <div className="notification-title-row">
+                        <strong>{notification.title}</strong>
+
+                        <span
+                          className={`severity-badge ${notification.severity}`}
+                        >
+                          {notification.severity}
+                        </span>
+                      </div>
+
+                      <p>{notification.message}</p>
+
+                      <small>
+                        {notification.application}
+                        {" · "}
+                        {formatCheckedAt(notification.createdAt)}
+                      </small>
+                    </div>
+
+                    <span
+                      className={`notification-status ${notification.status}`}
+                    >
+                      {notification.status}
+                    </span>
+                  </article>
+                ))
+              )}
+            </div>
           </section>
 
           {/* Application fleet cards */}

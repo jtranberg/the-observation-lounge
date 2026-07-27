@@ -1,6 +1,9 @@
-const API_BASE_URL =
-  import.meta.env.VITE_OBSERVATION_API_URL ||
-  "http://localhost:5055";
+const API_BASE_URL = String(
+  import.meta.env.VITE_OBSERVATION_LOUNGE_API_URL ||
+    (import.meta.env.DEV ? "http://localhost:5055" : "")
+)
+  .trim()
+  .replace(/\/+$/, "");
 
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}));
