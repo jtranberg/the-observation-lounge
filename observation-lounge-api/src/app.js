@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import process from "node:process";
 import applicationRoutes from "./routes/applicationRoutes.js";
 import healthRoutes from "./routes/healthRoutes.js";
@@ -65,7 +66,7 @@ app.use((request, response) => {
 });
 
 // Keep this last so it catches errors from all middleware and routes.
-app.use((error, _request, response, ) => {
+app.use((error, _request, response, _next) => {
   console.error("Observation Lounge API error:", error);
 
   response.status(500).json({
