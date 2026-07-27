@@ -513,6 +513,7 @@ export default function App() {
    * Run an initial fleet check and continue monitoring every 30 seconds.
    */
   useEffect(() => {
+    
     const initialCheckId = window.setTimeout(() => {
       void checkAllApplications();
     }, 0);
