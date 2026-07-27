@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
-
-import { fetchApplicationHealth } from "./services/healthService";
 
 import {
   historyProcessor,
@@ -13,7 +11,9 @@ import {
 
 import {
   APPLICATION_CONNECTION_STATUS,
+  checkApplicationHealth as checkRegistryApplicationHealth,
   getApplications,
+  refreshApplicationRegistry,
 } from "./engine/registry/applicationRegistry";
 
 import {
@@ -219,125 +219,16 @@ function getEventStatusClass(event) {
   }
 }
 
-const CONNECTIONS_STORAGE_KEY = "observation-lounge-connections";
-
-function normalizeSavedConnection(connection) {
-  const latestObservation = connection.latestObservation || {};
-
-  const observationApplication =
-    latestObservation.application &&
-    typeof latestObservation.application === "object"
-      ? latestObservation.application
-      : {};
-
-  const observationService =
-    latestObservation.service && typeof latestObservation.service === "object"
-      ? latestObservation.service
-      : {};
-
-  const observationDatabase =
-    latestObservation.database && typeof latestObservation.database === "object"
-      ? latestObservation.database
-      : {};
-
-  return {
-    ...connection,
-
-    id: connection.id,
-    name:
-      observationApplication.name || connection.name || "Unnamed Application",
-
-    service:
-      observationService.name ||
-      latestObservation.service ||
-      connection.name ||
-      "Unknown Service",
-
-    description: connection.description || "",
-
-    observationUrl: connection.observationUrl || null,
-    dashboardUrl: connection.dashboardUrl || "",
-
-    connectionStatus:
-      connection.enabled === false
-        ? APPLICATION_CONNECTION_STATUS.DISABLED
-        : APPLICATION_CONNECTION_STATUS.CONNECTED,
-
-    environment:
-      latestObservation.environment || connection.environment || "Unknown",
-
-    database:
-      observationDatabase.status || latestObservation.database || "Unknown",
-
-    deploymentProvider: connection.deploymentProvider || "Unknown",
-
-    frontendProvider: connection.frontendProvider || "Unknown",
-
-    domain: connection.dashboardUrl || connection.observationUrl || null,
-
-    enabled: connection.enabled !== false,
-
-    thresholds: {
-      degradedResponseMs: 2_000,
-      offlineAfterFailures: 3,
-    },
-
-    metadata: {
-      applicationType: connection.appType || "custom",
-      visibility: connection.visibility || "private",
-      featured: connection.featured === true,
-    },
-  };
-}
-
-function getSavedRegistryApplications() {
-  try {
-    const storedValue = window.localStorage.getItem(CONNECTIONS_STORAGE_KEY);
-
-    if (!storedValue) {
-      return [];
-    }
-
-    const parsedValue = JSON.parse(storedValue);
-
-    if (!Array.isArray(parsedValue)) {
-      return [];
-    }
-
-    return parsedValue
-      .filter((connection) => connection && connection.id)
-      .map(normalizeSavedConnection);
-  } catch (error) {
-    console.error("Unable to load saved application registry:", error);
-
-    return [];
-  }
-}
-
 function loadRegistryApplications() {
-  const savedApplications = getSavedRegistryApplications();
-
-  return savedApplications.length > 0 ? savedApplications : getApplications();
-}
-
-function getProspectorObservationUrl() {
-  const configuredUrl = import.meta.env.VITE_PROSPECTOR_API_URL?.trim();
-
-  if (!configuredUrl) {
-    return import.meta.env.DEV ? "http://localhost:5050/api/health" : "";
-  }
-
-  const normalizedUrl = configuredUrl.replace(/\/+$/, "");
-
-  return normalizedUrl.endsWith("/api/health")
-    ? normalizedUrl
-    : `${normalizedUrl}/api/health`;
+  return getApplications();
 }
 
 export default function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [applicationHealth, setApplicationHealth] = useState({});
   const [refreshing, setRefreshing] = useState(false);
+  const [registryLoading, setRegistryLoading] = useState(true);
+  const [registryError, setRegistryError] = useState("");
 
   const [metricsState, setMetricsState] = useState(() =>
     metricsProcessor.getState(),
@@ -355,43 +246,45 @@ export default function App() {
   const initialHealthCheckStarted = useRef(false);
 
   /**
-   * Application definitions supplied by the Connections registry.
-   *
-   * Browser-saved registry entries are preferred. The code registry is
-   * retained as a fallback until the registry is moved to a shared API.
+   * Applications loaded from the MongoDB-backed registry cache.
    */
   const [registeredApplications, setRegisteredApplications] = useState(() =>
     loadRegistryApplications(),
   );
 
- function showDashboard() {
-  // Reload the latest saved registry entries
-  setRegisteredApplications(loadRegistryApplications());
-
-  // Switch back to the dashboard
-  setActivePage("dashboard");
-
-  // Immediately refresh health for the updated registry
-  setTimeout(() => {
-    void checkAllApplications({ manual: false });
-  }, 0);
-}
   /**
-   * Reload registry entries when another tab changes localStorage.
+   * Load the latest application registry from the backend after mount.
    */
   useEffect(() => {
-    function handleStorageChange(event) {
-      if (event.key && event.key !== CONNECTIONS_STORAGE_KEY) {
-        return;
-      }
+    let cancelled = false;
 
-      setRegisteredApplications(loadRegistryApplications());
+    async function loadApplications() {
+      try {
+        setRegistryLoading(true);
+        setRegistryError("");
+
+        const applications = await refreshApplicationRegistry();
+
+        if (!cancelled) {
+          setRegisteredApplications(applications);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRegistryError(
+            error.message || "Unable to load application registry.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setRegistryLoading(false);
+        }
+      }
     }
 
-    window.addEventListener("storage", handleStorageChange);
+    void loadApplications();
 
     return () => {
-      window.removeEventListener("storage", handleStorageChange);
+      cancelled = true;
     };
   }, []);
 
@@ -400,27 +293,12 @@ export default function App() {
    */
   const monitorableApplications = useMemo(
     () =>
-      registeredApplications
-        .filter(
-          (application) =>
-            application.connectionStatus ===
-            APPLICATION_CONNECTION_STATUS.CONNECTED,
-        )
-        .map((application) => {
-          if (application.observationUrl) {
-            return application;
-          }
-
-          if (application.id === "prospector") {
-            return {
-              ...application,
-              observationUrl: getProspectorObservationUrl(),
-            };
-          }
-
-          return application;
-        })
-        .filter((application) => Boolean(application.observationUrl)),
+      registeredApplications.filter(
+        (application) =>
+          application.connectionStatus ===
+            APPLICATION_CONNECTION_STATUS.CONNECTED &&
+          Boolean(application.observationUrl),
+      ),
     [registeredApplications],
   );
 
@@ -447,20 +325,99 @@ export default function App() {
   }, []);
 
   /**
-   * Check one application and store the latest normalized result by ID.
+   * Check one application through the MongoDB-backed registry and publish
+   * the normalized result into the Observation Engine.
    */
   const checkApplicationHealth = useCallback(
     async (application) => {
-      const result = await fetchApplicationHealth(application);
+      try {
+        const {
+          application: updatedApplication,
+          check,
+        } = await checkRegistryApplicationHealth(application.id);
 
-      setApplicationHealth((current) => ({
-        ...current,
-        [application.id]: result,
-      }));
+        const result = {
+          id: updatedApplication.id,
+          name: updatedApplication.name,
+          status:
+            check?.healthStatus ||
+            updatedApplication.healthStatus ||
+            "Unknown",
+          responseTime:
+            check?.responseTime ??
+            updatedApplication.lastResponseTime ??
+            null,
+          database:
+            check?.databaseStatus ||
+            updatedApplication.databaseStatus ||
+            updatedApplication.database ||
+            "Unknown",
+          service:
+            updatedApplication.service || updatedApplication.name,
+          environment:
+            updatedApplication.environment || "Unknown",
+          uptimeSeconds:
+            check?.uptimeSeconds ??
+            check?.data?.uptimeSeconds ??
+            null,
+          checkedAt:
+            updatedApplication.lastCheckedAt || new Date(),
+          httpStatus: check?.httpStatus ?? null,
+          reachable: check?.reachable ?? false,
+          metrics: check?.metrics || {},
+          widgets: check?.widgets || [],
+          raw: check || null,
+          error: check?.error || null,
+        };
 
-      publishHealthResult(result);
+        setRegisteredApplications((current) =>
+          current.map((registeredApplication) =>
+            registeredApplication.id === application.id
+              ? {
+                  ...registeredApplication,
+                  ...updatedApplication,
+                }
+              : registeredApplication,
+          ),
+        );
 
-      return result;
+        setApplicationHealth((current) => ({
+          ...current,
+          [application.id]: result,
+        }));
+
+        publishHealthResult(result);
+
+        return result;
+      } catch (error) {
+        const fallbackResult = {
+          id: application.id,
+          name: application.name,
+          status: "Offline",
+          responseTime: null,
+          database: "Unknown",
+          service: application.service || application.name,
+          environment: application.environment || "Unknown",
+          uptimeSeconds: null,
+          checkedAt: new Date(),
+          httpStatus: null,
+          reachable: false,
+          metrics: {},
+          widgets: [],
+          raw: null,
+          error:
+            error.message || "Unexpected health-check failure.",
+        };
+
+        setApplicationHealth((current) => ({
+          ...current,
+          [application.id]: fallbackResult,
+        }));
+
+        publishHealthResult(fallbackResult);
+
+        return fallbackResult;
+      }
     },
     [publishHealthResult],
   );
@@ -490,6 +447,42 @@ export default function App() {
   );
 
   /**
+   * Return to the dashboard, refresh the MongoDB registry, and then run
+   * health checks against the refreshed fleet.
+   */
+  const showDashboard = useCallback(async () => {
+    setActivePage("dashboard");
+
+    try {
+      setRegistryLoading(true);
+      setRegistryError("");
+
+      const applications = await refreshApplicationRegistry();
+
+      setRegisteredApplications(applications);
+
+      const connectedApplications = applications.filter(
+        (application) =>
+          application.connectionStatus ===
+            APPLICATION_CONNECTION_STATUS.CONNECTED &&
+          Boolean(application.observationUrl),
+      );
+
+      await Promise.all(
+        connectedApplications.map((application) =>
+          checkApplicationHealth(application),
+        ),
+      );
+    } catch (error) {
+      setRegistryError(
+        error.message || "Unable to refresh application registry.",
+      );
+    } finally {
+      setRegistryLoading(false);
+    }
+  }, [checkApplicationHealth]);
+
+  /**
    * Subscribe React to processor-owned operational state.
    */
   useEffect(() => {
@@ -513,22 +506,34 @@ export default function App() {
   }, []);
 
   /**
- * Run one initial fleet check and continue monitoring every 5 minutes.
- */
-useEffect(() => {
-  if (!initialHealthCheckStarted.current) {
-    initialHealthCheckStarted.current = true;
-    void checkAllApplications();
-  }
+   * Run one initial fleet check after the registry loads and continue
+   * monitoring every five minutes.
+   */
+  useEffect(() => {
+    if (
+      registryLoading ||
+      monitorableApplications.length === 0
+    ) {
+      return undefined;
+    }
 
-  const intervalId = window.setInterval(() => {
-    void checkAllApplications();
-  }, 5 * 60 * 1000);
+    if (!initialHealthCheckStarted.current) {
+      initialHealthCheckStarted.current = true;
+      void checkAllApplications();
+    }
 
-  return () => {
-    window.clearInterval(intervalId);
-  };
-}, [checkAllApplications]);
+    const intervalId = window.setInterval(() => {
+      void checkAllApplications();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [
+    checkAllApplications,
+    monitorableApplications.length,
+    registryLoading,
+  ]);
 
   /**
    * Merge registry configuration with current health results.
@@ -659,7 +664,9 @@ useEffect(() => {
                 activePage === "dashboard" ? "active" : ""
               }`}
               type="button"
-              onClick={showDashboard}
+              onClick={() => {
+                void showDashboard();
+              }}
             >
               Dashboard
             </button>
@@ -737,6 +744,18 @@ useEffect(() => {
                 {refreshing ? "Checking..." : "Refresh health"}
               </button>
             </div>
+
+            {registryLoading && (
+              <p className="application-message">
+                Loading application registry...
+              </p>
+            )}
+
+            {registryError && (
+              <p className="application-error" role="alert">
+                {registryError}
+              </p>
+            )}
 
             <div className="application-grid">
               {applications.map((application) => {
