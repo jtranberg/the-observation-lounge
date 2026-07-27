@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
 import "./App.css";
 
@@ -349,7 +349,10 @@ export default function App() {
 
   const [incidentState, setIncidentState] = useState(() =>
     incidentProcessor.getState(),
+  
   );
+
+  const initialHealthCheckStarted = useRef(false);
 
   /**
    * Application definitions supplied by the Connections registry.
@@ -510,23 +513,22 @@ export default function App() {
   }, []);
 
   /**
-   * Run an initial fleet check and continue monitoring every 30 seconds.
-   */
-  useEffect(() => {
-    
-    const initialCheckId = window.setTimeout(() => {
-      void checkAllApplications();
-    }, 0);
+ * Run one initial fleet check and continue monitoring every 5 minutes.
+ */
+useEffect(() => {
+  if (!initialHealthCheckStarted.current) {
+    initialHealthCheckStarted.current = true;
+    void checkAllApplications();
+  }
 
-    const intervalId = window.setInterval(() => {
-      void checkAllApplications();
-    }, 5 * 60 * 1000);
+  const intervalId = window.setInterval(() => {
+    void checkAllApplications();
+  }, 5 * 60 * 1000);
 
-    return () => {
-      window.clearTimeout(initialCheckId);
-      window.clearInterval(intervalId);
-    };
-  }, [checkAllApplications]);
+  return () => {
+    window.clearInterval(intervalId);
+  };
+}, [checkAllApplications]);
 
   /**
    * Merge registry configuration with current health results.
