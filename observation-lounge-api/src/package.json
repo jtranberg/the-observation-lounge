@@ -1,0 +1,22 @@
+{
+  "name": "observation-lounge-api",
+  "version": "1.0.0",
+  "description": "Backend API for the Observation Lounge operational intelligence platform.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.0.0",
+    "express": "^5.0.0",
+    "helmet": "^8.0.0",
+    "mongoose": "^8.0.0",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}

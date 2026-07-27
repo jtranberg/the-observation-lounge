@@ -4,40 +4,53 @@
  * Application Registry
  * ------------------------------------------------------------------
  *
- * Central source of truth for every application monitored by the
+ * Frontend registry and API client for applications stored by the
+ * Observation Lounge backend.
+ *
+ * MongoDB is the permanent source of truth.
+ * This module maintains a local read-only cache for the dashboard and
  * Observation Engine.
- *
- * The dashboard should not hardcode application names or connection
- * details. It should ask this registry for the current fleet.
- *
- * Future responsibilities:
- * - Store application health endpoint URLs
- * - Track enabled and disabled integrations
- * - Define service ownership
- * - Define environment and deployment metadata
- * - Support application-specific thresholds
  * ------------------------------------------------------------------
  */
 
-/**
- * Supported application connection states.
- */
 export const APPLICATION_CONNECTION_STATUS = Object.freeze({
   CONNECTED: "Connected",
   NOT_CONNECTED: "Not Connected",
   DISABLED: "Disabled",
 });
 
-/**
- * Internal application records.
- *
- * Keep this collection private so callers cannot mutate the registry
- * directly.
- */
+const API_BASE_URL = String(
+  import.meta.env.VITE_OBSERVATION_LOUNGE_API_URL ||
+    (import.meta.env.DEV ? "http://localhost:5055" : ""),
+)
+  .trim()
+  .replace(/\/+$/, "");
+
 const applications = new Map();
 
+let registryLoaded = false;
+let registryLoadingPromise = null;
+
 /**
- * Creates a safe copy of one application record.
+ * Build an API URL.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+function buildApiUrl(path) {
+  if (!API_BASE_URL) {
+    throw new Error(
+      "VITE_OBSERVATION_LOUNGE_API_URL is not configured.",
+    );
+  }
+
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  return `${API_BASE_URL}${normalizedPath}`;
+}
+
+/**
+ * Safely clone a registry record.
  *
  * @param {object} application
  * @returns {object}
@@ -45,122 +58,336 @@ const applications = new Map();
 function cloneApplication(application) {
   return {
     ...application,
-    metadata: {
-      ...(application.metadata || {}),
-    },
+
     thresholds: {
       ...(application.thresholds || {}),
+    },
+
+    metadata: {
+      ...(application.metadata || {}),
     },
   };
 }
 
 /**
- * Validates a registry application before saving it.
- *
- * @param {object} application
- */
-function validateApplication(application) {
-  if (!application || typeof application !== "object") {
-    throw new Error("Application registry entry must be an object.");
-  }
-
-  if (!application.id) {
-    throw new Error("Application registry entry requires an id.");
-  }
-
-  if (!application.name) {
-    throw new Error(
-      `Application registry entry "${application.id}" requires a name.`,
-    );
-  }
-
-  if (!application.service) {
-    throw new Error(
-      `Application registry entry "${application.id}" requires a service name.`,
-    );
-  }
-}
-
-/**
- * Register a new monitored application.
+ * Normalize an application returned by the backend.
  *
  * @param {object} application
  * @returns {object}
  */
-export function registerApplication(application) {
-  validateApplication(application);
+function normalizeApplication(application) {
+  const logicalId = application.name || application.id;
 
-  if (applications.has(application.id)) {
-    throw new Error(`Application "${application.id}" is already registered.`);
-  }
+  return {
+    id: logicalId,
+    mongoId: application._id || application.mongoId || null,
 
-  const normalizedApplication = {
-    id: application.id,
-    name: application.name,
-    service: application.service,
+    name:
+      application.displayName ||
+      application.name ||
+      "Unnamed Application",
+
+    registryName: application.name || logicalId,
+
+    service: application.service || "Unknown Service",
+
     description: application.description || "",
+
     connectionStatus:
       application.connectionStatus ||
       APPLICATION_CONNECTION_STATUS.NOT_CONNECTED,
+
+    healthStatus: application.healthStatus || "Unknown",
+
     environment: application.environment || "Unknown",
-    observationUrl: application.observationUrl || application.healthUrl || null,
+
+    observationUrl:
+      application.healthUrl ||
+      buildObservationUrl(
+        application.baseUrl,
+        application.healthEndpoint,
+      ),
+
+    baseUrl: application.baseUrl || "",
+
+    healthEndpoint:
+      application.healthEndpoint || "/api/health",
+
     enabled: application.enabled ?? true,
-    database: application.database || "Unknown",
-    deploymentProvider: application.deploymentProvider || "Unknown",
-    frontendProvider: application.frontendProvider || "Unknown",
-    domain: application.domain || null,
+
+    database:
+      application.databaseStatus ||
+      application.database ||
+      "Unknown",
+
+    databaseStatus:
+      application.databaseStatus || "Unknown",
+
+    owner: application.owner || "",
+
+    pollInterval: application.pollInterval ?? 60_000,
+
+    lastCheckedAt: application.lastCheckedAt || null,
+
+    lastResponseTime: application.lastResponseTime ?? null,
+
+    createdAt: application.createdAt || null,
+
+    updatedAt: application.updatedAt || null,
+
     thresholds: {
-      degradedResponseMs: application.thresholds?.degradedResponseMs ?? 1_000,
-      offlineAfterFailures: application.thresholds?.offlineAfterFailures ?? 3,
-      ...application.thresholds,
+      degradedResponseMs:
+        application.thresholds?.degradedResponseMs ?? 1_500,
+
+      offlineAfterFailures:
+        application.thresholds?.offlineAfterFailures ?? 3,
+
+      ...(application.thresholds || {}),
     },
+
     metadata: {
-      ...application.metadata,
+      ...(application.metadata || {}),
     },
   };
+}
 
-  applications.set(normalizedApplication.id, normalizedApplication);
+/**
+ * Build an observation URL from a base URL and endpoint.
+ *
+ * @param {string} baseUrl
+ * @param {string} endpoint
+ * @returns {string|null}
+ */
+function buildObservationUrl(baseUrl, endpoint = "/api/health") {
+  const normalizedBaseUrl = String(baseUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+
+  if (!normalizedBaseUrl) {
+    return null;
+  }
+
+  const normalizedEndpoint = String(endpoint || "/api/health")
+    .trim()
+    .replace(/^\/?/, "/");
+
+  if (normalizedBaseUrl.endsWith(normalizedEndpoint)) {
+    return normalizedBaseUrl;
+  }
+
+  return `${normalizedBaseUrl}${normalizedEndpoint}`;
+}
+
+/**
+ * Perform an API request and return its JSON response.
+ *
+ * @param {string} path
+ * @param {RequestInit} options
+ * @returns {Promise<object>}
+ */
+async function apiRequest(path, options = {}) {
+  const response = await fetch(buildApiUrl(path), {
+    ...options,
+
+    headers: {
+      Accept: "application/json",
+      ...(options.body
+        ? {
+            "Content-Type": "application/json",
+          }
+        : {}),
+      ...(options.headers || {}),
+    },
+  });
+
+  let payload;
+
+try {
+  payload = await response.json();
+} catch {
+  payload = null;
+}
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error ||
+        `Observation Lounge API request failed with status ${response.status}.`,
+    );
+  }
+
+  return payload;
+}
+
+/**
+ * Replace the local cache with applications returned by the API.
+ *
+ * @param {object[]} records
+ */
+function replaceRegistryCache(records) {
+  applications.clear();
+
+  for (const record of records) {
+    const application = normalizeApplication(record);
+
+    if (!application.id) {
+      continue;
+    }
+
+    applications.set(application.id, application);
+  }
+
+  registryLoaded = true;
+}
+
+/**
+ * Load the current application fleet from MongoDB.
+ *
+ * Concurrent callers share the same request.
+ *
+ * @returns {Promise<object[]>}
+ */
+export async function loadApplicationRegistry() {
+  if (registryLoadingPromise) {
+    return registryLoadingPromise;
+  }
+
+  registryLoadingPromise = apiRequest("/api/applications")
+    .then((payload) => {
+      replaceRegistryCache(payload.applications || []);
+
+      return getApplications({
+        includeDisabled: true,
+      });
+    })
+    .finally(() => {
+      registryLoadingPromise = null;
+    });
+
+  return registryLoadingPromise;
+}
+
+/**
+ * Refresh the registry from MongoDB.
+ *
+ * @returns {Promise<object[]>}
+ */
+export async function refreshApplicationRegistry() {
+  return loadApplicationRegistry();
+}
+
+/**
+ * Register a new application through the backend.
+ *
+ * @param {object} application
+ * @returns {Promise<object>}
+ */
+export async function registerApplication(application) {
+  const payload = await apiRequest("/api/applications", {
+    method: "POST",
+    body: JSON.stringify(application),
+  });
+
+  const normalizedApplication = normalizeApplication(
+    payload.application,
+  );
+
+  applications.set(
+    normalizedApplication.id,
+    normalizedApplication,
+  );
 
   return cloneApplication(normalizedApplication);
 }
 
 /**
- * Update an existing application.
+ * Update an existing application through the backend.
  *
  * @param {string} applicationId
  * @param {object} updates
- * @returns {object}
+ * @returns {Promise<object>}
  */
-export function updateApplication(applicationId, updates) {
+export async function updateApplication(applicationId, updates) {
   const current = applications.get(applicationId);
 
   if (!current) {
-    throw new Error(`Application "${applicationId}" is not registered.`);
+    throw new Error(
+      `Application "${applicationId}" is not registered.`,
+    );
   }
 
-  const updatedApplication = {
-    ...current,
-    ...updates,
-    id: current.id,
-    thresholds: {
-      ...current.thresholds,
-      ...(updates.thresholds || {}),
+  if (!current.mongoId) {
+    throw new Error(
+      `Application "${applicationId}" does not have a MongoDB ID.`,
+    );
+  }
+
+  const payload = await apiRequest(
+    `/api/applications/${current.mongoId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(updates),
     },
-    metadata: {
-      ...current.metadata,
-      ...(updates.metadata || {}),
-    },
-  };
+  );
 
-  validateApplication(updatedApplication);
+  const normalizedApplication = normalizeApplication(
+    payload.application,
+  );
 
-  applications.set(applicationId, updatedApplication);
+  applications.delete(applicationId);
 
-  return cloneApplication(updatedApplication);
+  applications.set(
+    normalizedApplication.id,
+    normalizedApplication,
+  );
+
+  return cloneApplication(normalizedApplication);
 }
 
 /**
- * Return one application by ID.
+ * Run a live health check through the Observation Lounge backend.
+ *
+ * @param {string} applicationId
+ * @returns {Promise<object>}
+ */
+export async function checkApplicationHealth(applicationId) {
+  const current = applications.get(applicationId);
+
+  if (!current) {
+    throw new Error(
+      `Application "${applicationId}" is not registered.`,
+    );
+  }
+
+  if (!current.mongoId) {
+    throw new Error(
+      `Application "${applicationId}" does not have a MongoDB ID.`,
+    );
+  }
+
+  const payload = await apiRequest(
+    `/api/applications/${current.mongoId}/check`,
+    {
+      method: "POST",
+    },
+  );
+
+  const normalizedApplication = normalizeApplication(
+    payload.application,
+  );
+
+  applications.set(
+    normalizedApplication.id,
+    normalizedApplication,
+  );
+
+  return {
+    application: cloneApplication(normalizedApplication),
+    check: payload.check,
+  };
+}
+
+/**
+ * Return one cached application by logical ID.
  *
  * @param {string} applicationId
  * @returns {object|null}
@@ -172,7 +399,10 @@ export function getApplication(applicationId) {
 }
 
 /**
- * Return all registered applications.
+ * Return all cached applications.
+ *
+ * Call loadApplicationRegistry() during application startup before
+ * relying on this method.
  *
  * @param {object} options
  * @param {boolean} options.includeDisabled
@@ -180,12 +410,15 @@ export function getApplication(applicationId) {
  */
 export function getApplications({ includeDisabled = false } = {}) {
   return Array.from(applications.values())
-    .filter((application) => includeDisabled || application.enabled)
+    .filter(
+      (application) =>
+        includeDisabled || application.enabled,
+    )
     .map(cloneApplication);
 }
 
 /**
- * Return applications that are ready for live monitoring.
+ * Return applications ready for live monitoring.
  *
  * @returns {object[]}
  */
@@ -199,17 +432,33 @@ export function getConnectedApplications() {
 }
 
 /**
- * Remove an application from the registry.
+ * Remove an application through the backend.
  *
  * @param {string} applicationId
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-export function unregisterApplication(applicationId) {
+export async function unregisterApplication(applicationId) {
+  const current = applications.get(applicationId);
+
+  if (!current) {
+    return false;
+  }
+
+  if (!current.mongoId) {
+    throw new Error(
+      `Application "${applicationId}" does not have a MongoDB ID.`,
+    );
+  }
+
+  await apiRequest(`/api/applications/${current.mongoId}`, {
+    method: "DELETE",
+  });
+
   return applications.delete(applicationId);
 }
 
 /**
- * Returns true when an application exists.
+ * Returns true when an application exists in the local cache.
  *
  * @param {string} applicationId
  * @returns {boolean}
@@ -219,7 +468,7 @@ export function hasApplication(applicationId) {
 }
 
 /**
- * Return registry statistics.
+ * Return registry statistics from the local cache.
  *
  * @returns {object}
  */
@@ -231,8 +480,9 @@ export function getApplicationRegistryStatistics() {
   return {
     total: registeredApplications.length,
 
-    enabled: registeredApplications.filter((application) => application.enabled)
-      .length,
+    enabled: registeredApplications.filter(
+      (application) => application.enabled,
+    ).length,
 
     disabled: registeredApplications.filter(
       (application) => !application.enabled,
@@ -253,113 +503,20 @@ export function getApplicationRegistryStatistics() {
 }
 
 /**
- * Clear all registered applications.
+ * Returns whether the first registry load has completed.
  *
- * Intended primarily for tests and future registry reloading.
+ * @returns {boolean}
+ */
+export function isApplicationRegistryLoaded() {
+  return registryLoaded;
+}
+
+/**
+ * Clear the frontend registry cache.
+ *
+ * This does not delete records from MongoDB.
  */
 export function clearApplicationRegistry() {
   applications.clear();
+  registryLoaded = false;
 }
-
-
-/* =========================================================
-   Default Application Registrations
-========================================================= */
-
-function buildObservationUrl(baseUrl, endpoint) {
-  const normalizedBaseUrl = String(baseUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
-
-  if (!normalizedBaseUrl) {
-    return null;
-  }
-
-  if (normalizedBaseUrl.endsWith(endpoint)) {
-    return normalizedBaseUrl;
-  }
-
-  return `${normalizedBaseUrl}${endpoint}`;
-}
-
-const prospectorBaseUrl =
-  import.meta.env.VITE_PROSPECTOR_API_URL ||
-  (import.meta.env.DEV ? "http://localhost:5050" : "");
-
-const syndicatorObservationUrl =
-  import.meta.env.VITE_SYNDICATOR_OBSERVATION_URL ||
-  (import.meta.env.DEV
-    ? "http://localhost:3000/api/observation"
-    : "");
-
-registerApplication({
-  id: "prospector",
-  name: "Prospector",
-  service: "The Prospector API",
-
-  description:
-    "Athlete intelligence, scouting, and prospect discovery platform.",
-
-  connectionStatus:
-    APPLICATION_CONNECTION_STATUS.CONNECTED,
-
-  observationUrl: buildObservationUrl(
-    prospectorBaseUrl,
-    "/api/health",
-  ),
-
-  environment: import.meta.env.DEV
-    ? "development"
-    : "production",
-
-  database: "MongoDB",
-  deploymentProvider: "Render",
-  frontendProvider: "Netlify",
-  domain: "unitedsportsprospects.com",
-
-  thresholds: {
-    degradedResponseMs: 1_500,
-    offlineAfterFailures: 3,
-  },
-
-  metadata: {
-    applicationType: "sports-intelligence",
-  },
-});
-
-registerApplication({
-  id: "syndicator",
-  name: "Wall Syndicator ",
-  service: "Syndicator API",
-
-  description:
-    "Property feed generation and marketplace synchronization platform.",
-
-  connectionStatus:
-    APPLICATION_CONNECTION_STATUS.CONNECTED,
-
-  observationUrl: syndicatorObservationUrl,
-
-  environment: import.meta.env.DEV
-    ? "development"
-    : "production",
-
-  database: "Webflow",
-  deploymentProvider: "Render",
-  frontendProvider: "Netlify",
-
-  domain: import.meta.env.DEV
-    ? "localhost:3000"
-    : "Production Syndicator",
-
-  thresholds: {
-    degradedResponseMs: 2_000,
-    offlineAfterFailures: 3,
-  },
-
-  metadata: {
-    applicationType: "syndication",
-    marketplace: "Apartments.com",
-  },
-});
-
