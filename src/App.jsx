@@ -144,7 +144,7 @@ function getStatusClass(status) {
  * @returns {string}
  */
 function formatResponseTime(responseTime) {
-  return responseTime != null ? `${responseTime} ms` : "â€”";
+  return responseTime != null ? `${responseTime} ms` : "-";
 }
 
 /**
@@ -919,7 +919,7 @@ export default function App() {
 
                       <small>
                         {notification.application}
-                        {" Â· "}
+                        {" | "}
                         {formatCheckedAt(notification.createdAt)}
                       </small>
                     </div>
@@ -1052,7 +1052,7 @@ export default function App() {
               </div>
 
               <span className="event-count">
-                {incidentState.open} open Â· {incidentState.resolved} resolved
+                {incidentState.open} open | {incidentState.resolved} resolved
               </span>
             </div>
 
@@ -1068,10 +1068,10 @@ export default function App() {
                       <strong>{incident.title}</strong>
 
                       <p>
-                        {incident.application} Â·{" "}
+                        {incident.application} |{" "}
                         {formatCheckedAt(incident.openedAt)}
                         {incident.resolvedAt
-                          ? ` Â· Resolved ${formatCheckedAt(
+                          ? ` | Resolved ${formatCheckedAt(
                               incident.resolvedAt,
                             )}`
                           : ""}
@@ -1134,7 +1134,7 @@ export default function App() {
                       <em className={`event-status ${eventStatusClass}`}>
                         {eventStatus}
 
-                        {responseTime != null ? ` Â· ${responseTime} ms` : ""}
+                        {responseTime != null ? ` | ${responseTime} ms` : ""}
                       </em>
                     </div>
                   );
