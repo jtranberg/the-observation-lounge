@@ -24,7 +24,11 @@ import {
 
 import AppConnectionsPage from "../pages/AppConnectionsPage";
 
-import { getNotifications } from "./services/notificationApi";
+import {
+  getNotifications,
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+} from "./services/notificationApi";
 
 /**
  * ------------------------------------------------------------------
@@ -140,7 +144,7 @@ function getStatusClass(status) {
  * @returns {string}
  */
 function formatResponseTime(responseTime) {
-  return responseTime != null ? `${responseTime} ms` : "—";
+  return responseTime != null ? `${responseTime} ms` : "â€”";
 }
 
 /**
@@ -256,6 +260,9 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [notificationsLoading, setNotificationsLoading] = useState(true);
   const [notificationsError, setNotificationsError] = useState("");
+  const [notificationActionId, setNotificationActionId] = useState(null);
+  const [markingAllNotificationsRead, setMarkingAllNotificationsRead] =
+    useState(false);
 
   const loadNotifications = useCallback(async () => {
     try {
@@ -289,6 +296,59 @@ export default function App() {
   const unreadNotificationCount = notifications.filter(
     (notification) => notification.status === "unread",
   ).length;
+
+  const handleNotificationClick = useCallback(async (notification) => {
+    if (!notification?._id || notification.status !== "unread") {
+      return;
+    }
+
+    try {
+      setNotificationActionId(notification._id);
+      setNotificationsError("");
+
+      await markNotificationAsRead(notification._id);
+
+      setNotifications((current) =>
+        current.map((currentNotification) =>
+          currentNotification._id === notification._id
+            ? {
+                ...currentNotification,
+                status: "read",
+              }
+            : currentNotification,
+        ),
+      );
+    } catch (error) {
+      setNotificationsError(
+        error.message || "Unable to mark the notification as read.",
+      );
+    } finally {
+      setNotificationActionId(null);
+    }
+  }, []);
+
+  const handleMarkAllNotificationsRead = useCallback(async () => {
+    try {
+      setMarkingAllNotificationsRead(true);
+      setNotificationsError("");
+
+      await markAllNotificationsAsRead();
+
+      setNotifications((current) =>
+        current.map((notification) => ({
+          ...notification,
+          status: "read",
+        })),
+      );
+    } catch (error) {
+      setNotificationsError(
+        error.message || "Unable to mark all notifications as read.",
+      );
+    } finally {
+      setMarkingAllNotificationsRead(false);
+    }
+  }, []);
+
   /**
    * Load the latest application registry from the backend after mount.
    */
@@ -764,6 +824,23 @@ export default function App() {
                   className="refresh-button"
                   type="button"
                   onClick={() => {
+                    void handleMarkAllNotificationsRead();
+                  }}
+                  disabled={
+                    notificationsLoading ||
+                    markingAllNotificationsRead ||
+                    unreadNotificationCount === 0
+                  }
+                >
+                  {markingAllNotificationsRead
+                    ? "Marking as read..."
+                    : "Mark all as read"}
+                </button>
+
+                <button
+                  className="refresh-button"
+                  type="button"
+                  onClick={() => {
                     void loadNotifications();
                   }}
                   disabled={notificationsLoading}
@@ -791,8 +868,41 @@ export default function App() {
                   <article
                     className={`notification-row ${
                       notification.status === "unread" ? "unread" : ""
+                    } ${
+                      notificationActionId === notification._id
+                        ? "updating"
+                        : ""
                     }`}
                     key={notification._id}
+                    role={
+                      notification.status === "unread" ? "button" : undefined
+                    }
+                    tabIndex={notification.status === "unread" ? 0 : undefined}
+                    aria-label={
+                      notification.status === "unread"
+                        ? `${notification.title}. Mark notification as read.`
+                        : undefined
+                    }
+                    aria-busy={
+                      notificationActionId === notification._id
+                        ? "true"
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (notificationActionId !== notification._id) {
+                        void handleNotificationClick(notification);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        notification.status === "unread" &&
+                        notificationActionId !== notification._id &&
+                        (event.key === "Enter" || event.key === " ")
+                      ) {
+                        event.preventDefault();
+                        void handleNotificationClick(notification);
+                      }
+                    }}
                   >
                     <div className="notification-content">
                       <div className="notification-title-row">
@@ -809,7 +919,7 @@ export default function App() {
 
                       <small>
                         {notification.application}
-                        {" · "}
+                        {" Â· "}
                         {formatCheckedAt(notification.createdAt)}
                       </small>
                     </div>
@@ -817,7 +927,9 @@ export default function App() {
                     <span
                       className={`notification-status ${notification.status}`}
                     >
-                      {notification.status}
+                      {notificationActionId === notification._id
+                        ? "updating"
+                        : notification.status}
                     </span>
                   </article>
                 ))
@@ -940,7 +1052,7 @@ export default function App() {
               </div>
 
               <span className="event-count">
-                {incidentState.open} open · {incidentState.resolved} resolved
+                {incidentState.open} open Â· {incidentState.resolved} resolved
               </span>
             </div>
 
@@ -956,10 +1068,10 @@ export default function App() {
                       <strong>{incident.title}</strong>
 
                       <p>
-                        {incident.application} ·{" "}
+                        {incident.application} Â·{" "}
                         {formatCheckedAt(incident.openedAt)}
                         {incident.resolvedAt
-                          ? ` · Resolved ${formatCheckedAt(
+                          ? ` Â· Resolved ${formatCheckedAt(
                               incident.resolvedAt,
                             )}`
                           : ""}
@@ -1022,7 +1134,7 @@ export default function App() {
                       <em className={`event-status ${eventStatusClass}`}>
                         {eventStatus}
 
-                        {responseTime != null ? ` · ${responseTime} ms` : ""}
+                        {responseTime != null ? ` Â· ${responseTime} ms` : ""}
                       </em>
                     </div>
                   );
