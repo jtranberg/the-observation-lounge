@@ -89,6 +89,10 @@ h1 {
   font-size: clamp(2.3rem, 5vw, 4.8rem);
   line-height: 0.95;
 }
+.lounge-brand h1 {
+  color: #8fc7ff;
+  text-shadow: 0 0 24px rgba(79, 163, 255, 0.22);
+}
 
 .subtitle {
   margin-bottom: 0;
@@ -671,7 +675,7 @@ h1 {
 
 .connections-page .page-header h1 {
   margin: 0.25rem 0 0.65rem;
-  color: #f8fafc;
+  color: #fcfbf8;
   font-size: clamp(1.8rem, 4vw, 2.6rem);
 }
 
