@@ -1161,6 +1161,70 @@ h1 {
   }
 }
 
+/* Notification readability and interaction */
+
+.notification-row {
+  color: #eaf0f7;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease,
+    opacity 160ms ease;
+}
+
+.notification-title-row strong {
+  color: #f4f7fb;
+}
+
+.notification-content p {
+  margin: 0.45rem 0;
+  color: #c7d4e3;
+  line-height: 1.5;
+}
+
+.notification-content small {
+  color: #93a9c2;
+  opacity: 1;
+}
+
+.notification-status.read {
+  background: rgba(148, 163, 184, 0.1);
+  color: #aebed0;
+  opacity: 1;
+}
+
+.notification-status.unread {
+  background: rgba(121, 183, 255, 0.16);
+  color: #cce5ff;
+}
+
+.severity-badge.critical,
+.severity-badge.high {
+  background: rgba(214, 68, 68, 0.14);
+  color: #ff8f8f;
+}
+
+.notification-row.unread {
+  cursor: pointer;
+}
+
+.notification-row.unread:hover {
+  border-color: rgba(121, 183, 255, 0.42);
+  background: rgba(121, 183, 255, 0.08);
+  transform: translateY(-1px);
+}
+
+.notification-row.unread:focus-visible {
+  outline: 3px solid rgba(121, 183, 255, 0.42);
+  outline-offset: 3px;
+}
+
+.notification-row.updating {
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+
 .notification-heading-actions {
   display: flex;
   align-items: center;
